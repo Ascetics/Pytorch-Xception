@@ -97,11 +97,14 @@ class _PoolEntryBlock(nn.Module):
         self.relu1 = None
         if relu1:
             self.relu1 = nn.ReLU(inplace=False)
+            # self.relu1的inplace必须是False，否则loss.backward()会报错
+            # self.project做ResidualConnection是卷积操作，要求x不能被modify。inplace=True就modify了x
+            # 同理，后面两处inplace也必须是False，因为他们都是Block的第一个操作
         self.sepconv1 = SeparableConv2d(in_channels, out_channels,
                                         kernel_size=3, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(out_channels)
 
-        self.relu2 = nn.ReLU(inplace=False)
+        self.relu2 = nn.ReLU(inplace=True)
         self.sepconv2 = SeparableConv2d(out_channels, out_channels,
                                         kernel_size=3, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(out_channels)
@@ -123,7 +126,7 @@ class _PoolEntryBlock(nn.Module):
 
         x = self.maxpool(x)  # 下采样2倍
 
-        x += identity  # residual connection 相加
+        x = x + identity  # residual connection 相加
         return x
 
     pass
@@ -136,7 +139,7 @@ class _PoolMiddleBlock(nn.Module):
         :param inplanes: 输入channels
         """
         super(_PoolMiddleBlock, self).__init__()
-        mods = [nn.ReLU(inplace=False),
+        mods = [nn.ReLU(inplace=False),  # 必须是False，否则loss.backward()会报错
                 SeparableConv2d(inplanes, inplanes, 3, padding=1, bias=False),
                 nn.BatchNorm2d(inplanes)]
         mods *= 3  # 重复3次ReLU、SeparableConv、BN
@@ -144,7 +147,8 @@ class _PoolMiddleBlock(nn.Module):
         pass
 
     def forward(self, x):
-        return x + self.convs(x)  # channels和spatial都没有发生变化，直接相加
+        x + self.convs(x)  # channels和spatial都没有发生变化，直接相加
+        return x
 
     pass
 
@@ -161,12 +165,12 @@ class _PoolExitBlock(nn.Module):
         super(_PoolExitBlock, self).__init__()
         self.project = ResidualConnection(in_channels, out_channels, stride=2)
 
-        self.relu1 = nn.ReLU(inplace=False)
+        self.relu1 = nn.ReLU(inplace=False)  # 必须是False，否则loss.backward()会报错
         self.sepconv1 = SeparableConv2d(in_channels, in_channels,
                                         kernel_size=3, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(in_channels)
 
-        self.relu2 = nn.ReLU(inplace=False)
+        self.relu2 = nn.ReLU(inplace=True)
         self.sepconv2 = SeparableConv2d(in_channels, out_channels,
                                         kernel_size=3, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(out_channels)
@@ -187,7 +191,7 @@ class _PoolExitBlock(nn.Module):
 
         x = self.maxpool(x)  # 下采样2倍
 
-        x += identity  # residual connection 相加
+        x = x + identity  # residual connection 相加
         return x
 
     pass
@@ -199,12 +203,12 @@ class Xception(nn.Module):
         # 以下Entry Flow
         conv1 = [nn.Conv2d(in_channels, 32, 3, stride=2, padding=1, bias=False),
                  nn.BatchNorm2d(32),
-                 nn.ReLU(inplace=False), ]
+                 nn.ReLU(inplace=True), ]
         self.entry_conv1 = nn.Sequential(*conv1)
 
         conv2 = [nn.Conv2d(32, 64, 3, padding=1, bias=False),
                  nn.BatchNorm2d(64),
-                 nn.ReLU(inplace=False), ]
+                 nn.ReLU(inplace=True), ]
         self.entry_conv2 = nn.Sequential(*conv2)
 
         self.entry_block1 = _PoolEntryBlock(64, 128, relu1=False)
@@ -220,18 +224,18 @@ class Xception(nn.Module):
         conv1 = [SeparableConv2d(1024, 1536, 3, padding=1, bias=False),
                  # nn.Conv2d(1024, 1536, 3, padding=1, bias=False),
                  nn.BatchNorm2d(1536),
-                 nn.ReLU(inplace=False), ]
+                 nn.ReLU(inplace=True), ]
         self.exit_conv1 = nn.Sequential(*conv1)
 
         conv2 = [SeparableConv2d(1536, 2048, 3, padding=1, bias=False),
                  # nn.Conv2d(1536, 2048, 3, padding=1, bias=False),
                  nn.BatchNorm2d(2048),
-                 nn.ReLU(inplace=False), ]
+                 nn.ReLU(inplace=True), ]
         self.exit_conv2 = nn.Sequential(*conv2)
 
         self.avgpool = nn.AdaptiveAvgPool2d(1)
         self.fc = nn.Sequential(nn.Linear(2048, n_class),
-                                nn.ReLU(inplace=False))
+                                nn.ReLU(inplace=True))
 
         pass
 
@@ -304,11 +308,11 @@ class _ConvEntryBlock(nn.Module):
         convs = [SeparableConv2d(in_channels, out_channels, 3, padding=1,  # 第1个SeparableConv2d,不下采样
                                  bias=False),
                  nn.BatchNorm2d(out_channels),
-                 nn.ReLU(inplace=False),
+                 nn.ReLU(inplace=True),
                  SeparableConv2d(out_channels, out_channels, 3, padding=1,  # 第2个SeparableConv2d,不下采样
                                  bias=False),
                  nn.BatchNorm2d(out_channels),
-                 nn.ReLU(inplace=False),
+                 nn.ReLU(inplace=True),
                  SeparableConv2d(out_channels, out_channels, 3, stride=2,  # 第2个SeparableConv2d,stride=2,下采样2倍
                                  padding=1, bias=False),
 
@@ -319,8 +323,8 @@ class _ConvEntryBlock(nn.Module):
     def forward(self, x):
         identity = self.project(x)  # residual connection 准备
         x = self.convs(x)  # 下采样2倍
-        x += identity  # residual connection 相加
-        return F.relu(x, inplace=False)
+        x = x + identity  # residual connection 相加
+        return F.relu(x, inplace=True)
 
     pass
 
@@ -334,10 +338,10 @@ class _ConvMiddleBlock(nn.Module):
         super(_ConvMiddleBlock, self).__init__()
         convs = [SeparableConv2d(inplanes, inplanes, 3, padding=1, bias=False),
                  nn.BatchNorm2d(inplanes),
-                 nn.ReLU(inplace=False),
+                 nn.ReLU(inplace=True),
                  SeparableConv2d(inplanes, inplanes, 3, padding=1, bias=False),
                  nn.BatchNorm2d(inplanes),
-                 nn.ReLU(inplace=False),
+                 nn.ReLU(inplace=True),
                  SeparableConv2d(inplanes, inplanes, 3, padding=1, bias=False),
                  nn.BatchNorm2d(inplanes), ]
         self.convs = nn.Sequential(*convs)
@@ -345,7 +349,7 @@ class _ConvMiddleBlock(nn.Module):
 
     def forward(self, x):
         x = x + self.convs(x)  # channels和spatial都没有发生变化，Residual Connection直接相加
-        return F.relu(x, inplace=False)
+        return F.relu(x, inplace=True)
 
     pass
 
@@ -364,11 +368,11 @@ class _ConvExitBlock(nn.Module):
         convs = [SeparableConv2d(in_channels, in_channels, 3, padding=1,
                                  bias=False),  # 728->728，不下采样
                  nn.BatchNorm2d(in_channels),
-                 nn.ReLU(inplace=False),
+                 nn.ReLU(inplace=True),
                  SeparableConv2d(in_channels, out_channels, 3, padding=1,
                                  bias=False),  # 728->1024，不下采样
                  nn.BatchNorm2d(out_channels),
-                 nn.ReLU(inplace=False),
+                 nn.ReLU(inplace=True),
                  SeparableConv2d(out_channels, out_channels, 3, stride=2,
                                  padding=1, bias=False),  # 1024->1024，下采样2倍
                  nn.BatchNorm2d(out_channels), ]
@@ -378,8 +382,8 @@ class _ConvExitBlock(nn.Module):
     def forward(self, x):
         identity = self.project(x)  # residual connection 准备
         x = self.convs(x)  # 下采样2倍
-        x += identity  # residual connection 相加
-        return F.relu(x, inplace=False)
+        x = x + identity  # residual connection 相加
+        return F.relu(x, inplace=True)
 
     pass
 
@@ -390,12 +394,12 @@ class XceptionBackbone(nn.Module):
         # 以下Entry Flow
         conv1 = [nn.Conv2d(in_channels, 32, 3, stride=2, padding=1, bias=False),
                  nn.BatchNorm2d(32),
-                 nn.ReLU(inplace=False), ]
+                 nn.ReLU(inplace=True), ]
         self.entry_conv1 = nn.Sequential(*conv1)
 
         conv2 = [nn.Conv2d(32, 64, 3, padding=1, bias=False),
                  nn.BatchNorm2d(64),
-                 nn.ReLU(inplace=False), ]
+                 nn.ReLU(inplace=True), ]
         self.entry_conv2 = nn.Sequential(*conv2)
 
         self.entry_block1 = _ConvEntryBlock(64, 128)
@@ -410,22 +414,22 @@ class XceptionBackbone(nn.Module):
 
         conv1 = [SeparableConv2d(1024, 1536, 3, padding=1, bias=False),
                  nn.BatchNorm2d(1536),
-                 nn.ReLU(inplace=False), ]
+                 nn.ReLU(inplace=True), ]
         self.exit_conv1 = nn.Sequential(*conv1)
 
         conv2 = [SeparableConv2d(1536, 1536, 3, padding=1, bias=False),
                  nn.BatchNorm2d(1536),
-                 nn.ReLU(inplace=False), ]
+                 nn.ReLU(inplace=True), ]
         self.exit_conv2 = nn.Sequential(*conv2)
 
         conv3 = [SeparableConv2d(1536, 2048, 3, padding=1, bias=False),
                  nn.BatchNorm2d(2048),
-                 nn.ReLU(inplace=False), ]
+                 nn.ReLU(inplace=True), ]
         self.exit_conv3 = nn.Sequential(*conv3)
 
         self.avgpool = nn.AdaptiveAvgPool2d(1)
         self.fc = nn.Sequential(nn.Linear(2048, n_class),
-                                nn.ReLU(inplace=False))
+                                nn.ReLU(inplace=True))
 
         pass
 
@@ -486,12 +490,12 @@ class _XceptionFactory(nn.Module):
         # 以下Entry Flow
         conv1 = [nn.Conv2d(in_channels, 32, 3, stride=2, padding=1, bias=False),
                  nn.BatchNorm2d(32),
-                 nn.ReLU(inplace=False), ]
+                 nn.ReLU(inplace=True), ]
         self.entry_conv1 = nn.Sequential(*conv1)  # 第1个普通卷积，下采样2倍
 
         conv2 = [nn.Conv2d(32, 64, 3, padding=1, bias=False),
                  nn.BatchNorm2d(64),
-                 nn.ReLU(inplace=False), ]
+                 nn.ReLU(inplace=True), ]
         self.entry_conv2 = nn.Sequential(*conv2)  # 第2个普通卷积
 
         self.entry_blocks = nn.ModuleList()  # 连续3个residual block，都下采样2倍。
@@ -517,14 +521,14 @@ class _XceptionFactory(nn.Module):
         for out_channels in exit_conv_channels:
             conv = [SeparableConv2d(in_channels, out_channels, 3, padding=1, bias=False),
                     nn.BatchNorm2d(out_channels),
-                    nn.ReLU(inplace=False), ]
+                    nn.ReLU(inplace=True), ]
             self.exit_convs.append(nn.Sequential(*conv))
             in_channels = out_channels
             pass
 
         self.avgpool = nn.AdaptiveAvgPool2d(1)
         self.fc = nn.Sequential(nn.Linear(in_channels, n_class),
-                                nn.ReLU(inplace=False))
+                                nn.ReLU(inplace=True))
         pass
 
     def forward(self, x):
