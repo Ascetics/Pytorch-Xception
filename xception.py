@@ -533,22 +533,18 @@ class _XceptionFactory(nn.Module):
         x = self.entry_conv2(x)
         for block in self.entry_blocks:
             x = block(x)
-            print('entry', x.shape)
             pass
 
         # Middle Flow
         for block in self.middle_blocks:
             x = block(x)
-            print('mid', x.shape)
             pass
 
         # Exit Flow
         x = self.exit_block(x)
-        print('exit', x.shape)
 
         for conv in self.exit_convs:
             x = conv(x)
-            print('exit conv', x.shape)
             pass
 
         x = self.avgpool(x)
@@ -585,7 +581,10 @@ if __name__ == '__main__':
     # device = torch.device('cuda:6')
     device = torch.device('cpu')
 
-    key = 'backbone'
+    # net = Xception(3, 8).to(device)
+    # net = XceptionBackbone(3, 8).to(device)
+
+    key = 'paper'
     net = xception(key, 3, 8).to(device)
     print('in:', net, key)
 
