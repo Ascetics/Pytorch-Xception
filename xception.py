@@ -48,150 +48,6 @@ class ResidualConnection(nn.Sequential):
     pass
 
 
-class Xception(nn.Module):
-    def __init__(self, in_channels=3, n_class=1000):
-        super(Xception, self).__init__()
-        # 以下Entry Flow
-        conv1 = [nn.Conv2d(in_channels, 32, 3, stride=2, padding=1, bias=False),
-                 nn.BatchNorm2d(32),
-                 nn.ReLU(inplace=False), ]
-        self.entry_conv1 = nn.Sequential(*conv1)
-
-        conv2 = [nn.Conv2d(32, 64, 3, padding=1, bias=False),
-                 nn.BatchNorm2d(64),
-                 nn.ReLU(inplace=False), ]
-        self.entry_conv2 = nn.Sequential(*conv2)
-
-        self.entry_block1 = _PoolEntryBlock(64, 128, relu1=False)
-        self.entry_block2 = _PoolEntryBlock(128, 256)
-        self.entry_block3 = _PoolEntryBlock(256, 728)
-
-        # 以下Middle Flow
-        self.middle_flow = nn.ModuleList([_PoolMiddleBlock(728)] * 8)
-
-        # 以下Exit Flow
-        self.exit_block = _PoolExitBlock(728, 1024)
-
-        conv1 = [nn.Conv2d(1024, 1536, 3, padding=1, bias=False),
-                 nn.BatchNorm2d(1536),
-                 nn.ReLU(inplace=False), ]
-        self.exit_conv1 = nn.Sequential(*conv1)
-
-        conv2 = [nn.Conv2d(1536, 2048, 3, padding=1, bias=False),
-                 nn.BatchNorm2d(2048),
-                 nn.ReLU(inplace=False), ]
-        self.exit_conv2 = nn.Sequential(*conv2)
-
-        self.avgpool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Sequential(nn.Linear(2048, n_class),
-                                nn.ReLU(inplace=False))
-
-        pass
-
-    def forward(self, x):
-        # Entry Flow
-
-        x = self.entry_conv1(x)
-        x = self.entry_conv2(x)
-
-        x = self.entry_block1(x)
-        x = self.entry_block2(x)
-        x = self.entry_block3(x)
-
-        # Middle Flow
-        for block in self.middle_flow:
-            x = block(x)
-
-        # Exit Flow
-        x = self.exit_block(x)
-        x = self.exit_conv1(x)
-        x = self.exit_conv2(x)
-
-        # FC
-        x = self.avgpool(x)
-        x = x.view(x.shape[0], -1)
-        x = self.fc(x)
-
-        return x
-
-    pass
-
-
-class Xception2(nn.Module):
-    def __init__(self, in_channels=3, n_class=1000):
-        super(Xception2, self).__init__()
-        # 以下Entry Flow
-        conv1 = [nn.Conv2d(in_channels, 32, 3, stride=2, padding=1, bias=False),
-                 nn.BatchNorm2d(32),
-                 nn.ReLU(inplace=False), ]
-        self.entry_conv1 = nn.Sequential(*conv1)
-
-        conv2 = [nn.Conv2d(32, 64, 3, padding=1, bias=False),
-                 nn.BatchNorm2d(64),
-                 nn.ReLU(inplace=False), ]
-        self.entry_conv2 = nn.Sequential(*conv2)
-
-        self.entry_block1 = _ComvEntryBlock(64, 128)
-        self.entry_block2 = _ComvEntryBlock(128, 256)
-        self.entry_block3 = _ComvEntryBlock(256, 728)
-
-        # 以下Middle Flow
-        self.middle_flow = nn.ModuleList([_ConvMiddleBlock(728)] * 16)
-
-        # 以下Exit Flow
-        self.exit_block = _ConvExitBlock(728, 1024)
-
-        conv1 = [SeparableConv2d(1024, 1536, 3, padding=1, bias=False),
-                 nn.BatchNorm2d(1536),
-                 nn.ReLU(inplace=False), ]
-        self.exit_conv1 = nn.Sequential(*conv1)
-
-        conv2 = [SeparableConv2d(1536, 1536, 3, padding=1, bias=False),
-                 nn.BatchNorm2d(1536),
-                 nn.ReLU(inplace=False), ]
-        self.exit_conv2 = nn.Sequential(*conv2)
-
-        conv3 = [SeparableConv2d(1536, 2048, 3, padding=1, bias=False),
-                 nn.BatchNorm2d(2048),
-                 nn.ReLU(inplace=False), ]
-        self.exit_conv3 = nn.Sequential(*conv3)
-
-        self.avgpool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Sequential(nn.Linear(2048, n_class),
-                                nn.ReLU(inplace=False))
-
-        pass
-
-    def forward(self, x):
-        # Entry Flow
-
-        x = self.entry_conv1(x)
-        x = self.entry_conv2(x)
-
-        x = self.entry_block1(x)
-        x = self.entry_block2(x)
-        x = self.entry_block3(x)
-
-        # Middle Flow
-        for block in self.middle_flow:
-            x = block(x)
-
-        # Exit Flow
-        x = self.exit_block(x)
-        x = self.exit_conv1(x)
-        x = self.exit_conv2(x)
-        x = self.exit_conv3(x)
-
-        # FC
-        x = self.avgpool(x)
-        x = x.view(x.shape[0], -1)
-        x = self.fc(x)
-
-        return x
-
-    pass
-
-
 """
 论文《Xception: Deep Learning with Depthwise Separable Convolutions》
 
@@ -209,13 +65,13 @@ multiplier of 1 (no depth expansion).
 
 对EntryFlow：
 第1个module，也就是普通卷积单独实现。
-第2-第4个module结构相似，都是下采样，用DownBlock实现。
+第2-第4个module结构相似，都是下采样，用_PoolEntryBlock实现。
 
 对MiddleFlow：
-第5-第12个module结构相似，都不进行下采样，用Block实现。
+第5-第12个module结构相似，都不进行下采样，用_PoolMiddleBlock实现。
 
 对ExitFlow：
-第14个module有下采样，通道数不同，用ExitDownBlock实现。
+第14个module有下采样，通道数不同，用_PoolExitBlock实现。
 第15个module拆开，卷积部分单独实现
 
 全局平均池化单独实现。后面接全连接层。
@@ -337,6 +193,77 @@ class _PoolExitBlock(nn.Module):
     pass
 
 
+class Xception(nn.Module):
+    def __init__(self, in_channels=3, n_class=1000):
+        super(Xception, self).__init__()
+        # 以下Entry Flow
+        conv1 = [nn.Conv2d(in_channels, 32, 3, stride=2, padding=1, bias=False),
+                 nn.BatchNorm2d(32),
+                 nn.ReLU(inplace=False), ]
+        self.entry_conv1 = nn.Sequential(*conv1)
+
+        conv2 = [nn.Conv2d(32, 64, 3, padding=1, bias=False),
+                 nn.BatchNorm2d(64),
+                 nn.ReLU(inplace=False), ]
+        self.entry_conv2 = nn.Sequential(*conv2)
+
+        self.entry_block1 = _PoolEntryBlock(64, 128, relu1=False)
+        self.entry_block2 = _PoolEntryBlock(128, 256)
+        self.entry_block3 = _PoolEntryBlock(256, 728)
+
+        # 以下Middle Flow
+        self.middle_flow = nn.ModuleList([_PoolMiddleBlock(728)] * 8)
+
+        # 以下Exit Flow
+        self.exit_block = _PoolExitBlock(728, 1024)
+
+        conv1 = [SeparableConv2d(1024, 1536, 3, padding=1, bias=False),
+                 # nn.Conv2d(1024, 1536, 3, padding=1, bias=False),
+                 nn.BatchNorm2d(1536),
+                 nn.ReLU(inplace=False), ]
+        self.exit_conv1 = nn.Sequential(*conv1)
+
+        conv2 = [SeparableConv2d(1536, 2048, 3, padding=1, bias=False),
+                 # nn.Conv2d(1536, 2048, 3, padding=1, bias=False),
+                 nn.BatchNorm2d(2048),
+                 nn.ReLU(inplace=False), ]
+        self.exit_conv2 = nn.Sequential(*conv2)
+
+        self.avgpool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(nn.Linear(2048, n_class),
+                                nn.ReLU(inplace=False))
+
+        pass
+
+    def forward(self, x):
+        # Entry Flow
+
+        x = self.entry_conv1(x)
+        x = self.entry_conv2(x)
+
+        x = self.entry_block1(x)
+        x = self.entry_block2(x)
+        x = self.entry_block3(x)
+
+        # Middle Flow
+        for block in self.middle_flow:
+            x = block(x)
+
+        # Exit Flow
+        x = self.exit_block(x)
+        x = self.exit_conv1(x)
+        x = self.exit_conv2(x)
+
+        # FC
+        x = self.avgpool(x)
+        x = x.view(x.shape[0], -1)
+        x = self.fc(x)
+
+        return x
+
+    pass
+
+
 """
 论文《Deeplab v3+：Encoder-Decoder with Atrous Separable Convolution for Semantic Image Segmentation》
 
@@ -346,7 +273,7 @@ Fig. 4. We modify the Xception as follows:
 (2) all the max pooling operations are replaced by depthwise separable convolutions with striding.
 (3) extra batch normalization and ReLU are added after each 3x3 depthwise convolution, similar to MobileNet.
 
-按照DeepLabV3+论文实现，为DeepLabV+做准备：
+按照DeepLabV3+论文中对Xception的改进实现XceptionBackbone，为DeepLabV+做准备：
 
 对EntryFlow：
 第1个module，也就是普通卷积单独实现。
@@ -363,7 +290,7 @@ Fig. 4. We modify the Xception as follows:
 """
 
 
-class _ComvEntryBlock(nn.Module):
+class _ConvEntryBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
         """
         Entry Flow的3个下采样module
@@ -372,7 +299,7 @@ class _ComvEntryBlock(nn.Module):
         :param in_channels: 输入channels
         :param out_channels: 输出channels
         """
-        super(_ComvEntryBlock, self).__init__()
+        super(_ConvEntryBlock, self).__init__()
         self.project = ResidualConnection(in_channels, out_channels, stride=2)
         convs = [SeparableConv2d(in_channels, out_channels, 3, padding=1,  # 第1个SeparableConv2d,不下采样
                                  bias=False),
@@ -386,7 +313,7 @@ class _ComvEntryBlock(nn.Module):
                                  padding=1, bias=False),
 
                  nn.BatchNorm2d(out_channels), ]
-        self.convs(*convs)
+        self.convs = nn.Sequential(*convs)
         pass
 
     def forward(self, x):
@@ -457,13 +384,210 @@ class _ConvExitBlock(nn.Module):
     pass
 
 
+class XceptionBackbone(nn.Module):
+    def __init__(self, in_channels=3, n_class=1000):
+        super(XceptionBackbone, self).__init__()
+        # 以下Entry Flow
+        conv1 = [nn.Conv2d(in_channels, 32, 3, stride=2, padding=1, bias=False),
+                 nn.BatchNorm2d(32),
+                 nn.ReLU(inplace=False), ]
+        self.entry_conv1 = nn.Sequential(*conv1)
+
+        conv2 = [nn.Conv2d(32, 64, 3, padding=1, bias=False),
+                 nn.BatchNorm2d(64),
+                 nn.ReLU(inplace=False), ]
+        self.entry_conv2 = nn.Sequential(*conv2)
+
+        self.entry_block1 = _ConvEntryBlock(64, 128)
+        self.entry_block2 = _ConvEntryBlock(128, 256)
+        self.entry_block3 = _ConvEntryBlock(256, 728)
+
+        # 以下Middle Flow
+        self.middle_flow = nn.ModuleList([_ConvMiddleBlock(728)] * 16)  # 改进之一，middle block有16个
+
+        # 以下Exit Flow
+        self.exit_block = _ConvExitBlock(728, 1024)
+
+        conv1 = [SeparableConv2d(1024, 1536, 3, padding=1, bias=False),
+                 nn.BatchNorm2d(1536),
+                 nn.ReLU(inplace=False), ]
+        self.exit_conv1 = nn.Sequential(*conv1)
+
+        conv2 = [SeparableConv2d(1536, 1536, 3, padding=1, bias=False),
+                 nn.BatchNorm2d(1536),
+                 nn.ReLU(inplace=False), ]
+        self.exit_conv2 = nn.Sequential(*conv2)
+
+        conv3 = [SeparableConv2d(1536, 2048, 3, padding=1, bias=False),
+                 nn.BatchNorm2d(2048),
+                 nn.ReLU(inplace=False), ]
+        self.exit_conv3 = nn.Sequential(*conv3)
+
+        self.avgpool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(nn.Linear(2048, n_class),
+                                nn.ReLU(inplace=False))
+
+        pass
+
+    def forward(self, x):
+        # Entry Flow
+
+        x = self.entry_conv1(x)
+        x = self.entry_conv2(x)
+
+        x = self.entry_block1(x)
+        x = self.entry_block2(x)
+        x = self.entry_block3(x)
+
+        # Middle Flow
+        for block in self.middle_flow:
+            x = block(x)
+
+        # Exit Flow
+        x = self.exit_block(x)
+        x = self.exit_conv1(x)
+        x = self.exit_conv2(x)
+        x = self.exit_conv3(x)
+
+        # FC
+        x = self.avgpool(x)
+        x = x.view(x.shape[0], -1)
+        x = self.fc(x)
+
+        return x
+
+    pass
+
+
+################################################################################
+
+class _XceptionFactory(nn.Module):
+    def __init__(self, in_channels,
+                 entry_block=_PoolEntryBlock, entry_channels=(128, 256, 728),
+                 middle_block=_PoolMiddleBlock, n_middle=8,
+                 exit_block=_PoolExitBlock, exit_channels=1024,
+                 exit_conv_channels=(1536, 2048),
+                 n_class=1000):
+        """
+        闲的蛋疼，实现一个工厂类，将Xception论文实现和DeepLabV+论文改进的XceptionBackbone
+        统一到一起。增强了扩展性。
+        :param in_channels: 输入channels，图像channels
+        :param entry_block: 论文实现用_PoolEntryBlock，改进实现用_ConvEntryBlock
+        :param entry_channels: 每个entry block的输出channels，列表类型
+        :param middle_block: 论文实现用_PoolMiddleBlock，改进实现用_ConvMiddleBlock
+        :param n_middle: 论文实现用8，改进实现用16
+        :param exit_block: 论文实现用_PoolExitBlock，改进实现用_ConvExitBlock
+        :param exit_channels: 论文实现、改进实现都是1024
+        :param exit_conv_channels: 论文实现是2个Separable Conv的输出channels(1536,,2048)；
+                                    改进实现是3个Separable Conv的输出channels(1536,1536,2048)
+        :param n_class: n种分类
+        """
+        super(_XceptionFactory, self).__init__()
+        # 以下Entry Flow
+        conv1 = [nn.Conv2d(in_channels, 32, 3, stride=2, padding=1, bias=False),
+                 nn.BatchNorm2d(32),
+                 nn.ReLU(inplace=False), ]
+        self.entry_conv1 = nn.Sequential(*conv1)  # 第1个普通卷积，下采样2倍
+
+        conv2 = [nn.Conv2d(32, 64, 3, padding=1, bias=False),
+                 nn.BatchNorm2d(64),
+                 nn.ReLU(inplace=False), ]
+        self.entry_conv2 = nn.Sequential(*conv2)  # 第2个普通卷积
+
+        self.entry_blocks = nn.ModuleList()  # 连续3个residual block，都下采样2倍。
+        in_channels = 64
+        for i, out_channels in enumerate(entry_channels):
+            if i == 0 and isinstance(entry_block, _PoolEntryBlock):  # 注意第一个residual block的relu不一样
+                self.entry_blocks.append(entry_block(in_channels, out_channels, relu1=False))
+            elif i == 0 and isinstance(entry_block, _ConvEntryBlock):
+                self.entry_blocks.append(entry_block(in_channels, out_channels))
+            else:
+                self.entry_blocks.append(entry_block(in_channels, out_channels))
+            in_channels = out_channels
+            pass
+
+        # 以下Middle Flow
+        self.middle_blocks = nn.ModuleList([middle_block(in_channels)] * n_middle)
+
+        # 以下Exit Flow
+        self.exit_block = exit_block(in_channels, exit_channels)
+        in_channels = exit_channels
+
+        self.exit_convs = nn.ModuleList()
+        for out_channels in exit_conv_channels:
+            conv = [SeparableConv2d(in_channels, out_channels, 3, padding=1, bias=False),
+                    nn.BatchNorm2d(out_channels),
+                    nn.ReLU(inplace=False), ]
+            self.exit_convs.append(nn.Sequential(*conv))
+            in_channels = out_channels
+            pass
+
+        self.avgpool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(nn.Linear(in_channels, n_class),
+                                nn.ReLU(inplace=False))
+        pass
+
+    def forward(self, x):
+        # Entry Flow
+        x = self.entry_conv1(x)
+        x = self.entry_conv2(x)
+        for block in self.entry_blocks:
+            x = block(x)
+            print('entry', x.shape)
+            pass
+
+        # Middle Flow
+        for block in self.middle_blocks:
+            x = block(x)
+            print('mid', x.shape)
+            pass
+
+        # Exit Flow
+        x = self.exit_block(x)
+        print('exit', x.shape)
+
+        for conv in self.exit_convs:
+            x = conv(x)
+            print('exit conv', x.shape)
+            pass
+
+        x = self.avgpool(x)
+        x = x.view(x.shape[0], -1)
+        x = self.fc(x)
+
+        return x
+
+    pass
+
+
+def xception(xception_type='backbone', in_channels=3, n_class=1000):
+    if xception_type == 'paper':
+        return _XceptionFactory(in_channels=in_channels,
+                                entry_block=_PoolEntryBlock, entry_channels=[128, 256, 728],
+                                middle_block=_PoolMiddleBlock, n_middle=8,
+                                exit_block=_PoolExitBlock, exit_channels=1024,
+                                exit_conv_channels=[1536, 2048],
+                                n_class=n_class)
+    elif xception_type == 'backbone':
+        return _XceptionFactory(in_channels=in_channels,
+                                entry_block=_ConvEntryBlock, entry_channels=[128, 256, 728],
+                                middle_block=_ConvMiddleBlock, n_middle=16,
+                                exit_block=_ConvExitBlock, exit_channels=1024,
+                                exit_conv_channels=[1536, 1536, 2048],
+                                n_class=n_class)
+    else:
+        raise ValueError('xception type error!')
+
+
+################################################################################
+
 if __name__ == '__main__':
     # device = torch.device('cuda:6')
     device = torch.device('cpu')
 
-    net = Xception(in_channels=3, n_class=8)
-    print('in:', net)
-    net.to(device)
+    key = 'backbone'
+    net = xception(key, 3, 8).to(device)
+    print('in:', net, key)
 
     in_data = torch.randint(0, 256, (24, 3, 299, 299), dtype=torch.float)
     print(in_data.shape)
