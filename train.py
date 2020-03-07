@@ -94,10 +94,12 @@ if __name__ == '__main__':
                         transform=tsfs.ToTensor())
     vdata = DataLoader(vset, batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
 
-    dev = torch.device('cuda:5')
+    dev = torch.device('cuda:4')
 
     # model = Xception(1, 10)
+    # model = XceptionBackbone(1, 10)
     model = xception('paper', 1, 10)
+    # model = xception('backbone', 1, 10)
     model.to(dev)
 
     optim = torch.optim.Adam(model.parameters())
