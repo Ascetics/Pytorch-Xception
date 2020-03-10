@@ -573,32 +573,22 @@ class _XceptionBackBoneFactory(nn.Module):
     def forward(self, x):
         # Entry Flow
         x = self.entry_conv1(x)  # 2x
-        print(x.shape)
         x = self.entry_conv2(x)  # 2x
-        print(x.shape)
         x = self.entry_block1(x)  # 4x
         low_level_features = x
-        print(x.shape)
         x = self.entry_block2(x)
-        print(x.shape)
         x = self.entry_block3(x)
-        print(x.shape)
 
         # Middle Flow
         for block in self.middle_blocks:
             x = block(x)
-            print(x.shape)
             pass
 
         # Exit Flow
         x = self.exit_block(x)
-        print(x.shape)
         x = self.exit_conv1(x)
-        print(x.shape)
         x = self.exit_conv2(x)
-        print(x.shape)
         x = self.exit_conv3(x)
-        print(x.shape)
         return x, low_level_features
 
     pass
