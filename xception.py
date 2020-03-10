@@ -4,8 +4,8 @@ import torch.nn.functional as F
 
 
 class SeparableConv2d(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1,
-                 padding=0, bias=True):
+    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1,
+                 padding=1, dilation=1, bias=True):
         """
         深度可分离卷积
         第一个卷积在spatial层面上，每个channel单独进行卷积，用group=out_channels实现
@@ -19,7 +19,8 @@ class SeparableConv2d(nn.Module):
         """
         super(SeparableConv2d, self).__init__()
         self.dconv = nn.Conv2d(in_channels, in_channels, kernel_size, stride,
-                               padding, groups=in_channels, bias=bias)
+                               padding=padding, dilation=dilation,
+                               groups=in_channels, bias=bias)
         self.pconv = nn.Conv2d(in_channels, out_channels, kernel_size=1,
                                bias=bias)
         pass
@@ -281,81 +282,138 @@ Fig. 4. We modify the Xception as follows:
 
 对EntryFlow：
 第1个module，也就是普通卷积单独实现。
-第2-第4个module结构相似，都是stride=2的SeprableConv下采样，用_ComvEntryBlock实现。
+第2-第4个module结构相似，都是stride=2的SeprableConv下采样，用_ConvBlock实现。
 
 对MiddleFlow：
-第5-第12个module结构相似，都不进行下采样，用_ConvMiddleBlock实现。
+第5-第12个module结构相似，都不进行下采样，用_ConvBlock实现。
 
 对ExitFlow：
 第14个module有stride=2的SeprableConv下采样，通道数不同，用_ConvExitBlock实现。
 第15个module拆开，3个卷积单独实现
-
-全局平均池化单独实现。后面接全连接层。
 """
 
 
-class _ConvEntryBlock(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        """
-        Entry Flow的3个下采样module
-        按论文所说，每个Conv和Separable Conv都需要跟BN，ReLU
-        每个module的Separable Conv的out_channels一样，stride=2的SeprableConv做下采样
-        :param in_channels: 输入channels
-        :param out_channels: 输出channels
-        """
-        super(_ConvEntryBlock, self).__init__()
-        self.project = ResidualConnection(in_channels, out_channels, stride=2)
-        convs = [SeparableConv2d(in_channels, out_channels, 3, padding=1,  # 第1个SeparableConv2d,不下采样
-                                 bias=False),
-                 nn.BatchNorm2d(out_channels),
-                 nn.ReLU(inplace=True),
-                 SeparableConv2d(out_channels, out_channels, 3, padding=1,  # 第2个SeparableConv2d,不下采样
-                                 bias=False),
-                 nn.BatchNorm2d(out_channels),
-                 nn.ReLU(inplace=True),
-                 SeparableConv2d(out_channels, out_channels, 3, stride=2,  # 第2个SeparableConv2d,stride=2,下采样2倍
-                                 padding=1, bias=False),
+class XceptionBackbone(nn.Module):
+    """
+    实现了output stride = 16的backbone
+    """
 
-                 nn.BatchNorm2d(out_channels), ]
-        self.convs = nn.Sequential(*convs)
+    def __init__(self, in_channels=3):
+        super(XceptionBackbone, self).__init__()
+        # 以下Entry Flow
+        conv1 = [nn.Conv2d(in_channels, 32, 3, stride=2, padding=1, bias=False),
+                 nn.BatchNorm2d(32),
+                 nn.ReLU(inplace=True), ]
+        self.entry_conv1 = nn.Sequential(*conv1)  # 2x
+
+        conv2 = [nn.Conv2d(32, 64, 3, padding=1, bias=False),
+                 nn.BatchNorm2d(64),
+                 nn.ReLU(inplace=True), ]
+        self.entry_conv2 = nn.Sequential(*conv2)
+
+        self.entry_block1 = _ConvBlock(64, 128, stride=2)  # 4x
+        self.entry_block2 = _ConvBlock(128, 256, stride=2)  # 8x
+        self.entry_block3 = _ConvBlock(256, 728, stride=2)  # 16x
+
+        # 以下Middle Flow
+        # 论文第5页DeepLabv3 as encoder: 16x以后使用dilation=2，不再下采样
+        # 改进之一，middle block有16个
+        self.middle_flow = nn.ModuleList(
+            [_ConvBlock(728, 728, dilation=2)] * 16)  # 16x
+
+        # 以下Exit Flow
+        # 论文第5页DeepLabv3 as encoder: 16x以后使用dilation=2，不再下采样
+        self.exit_block = _ConvExitBlock(728, 1024, stride=1, dilation=2)
+
+        conv1 = [SeparableConv2d(1024, 1536, 3, padding=2, dilation=2, bias=False),
+                 nn.BatchNorm2d(1536),
+                 nn.ReLU(inplace=True), ]
+        self.exit_conv1 = nn.Sequential(*conv1)
+
+        conv2 = [SeparableConv2d(1536, 1536, 3, padding=2, dilation=2, bias=False),
+                 nn.BatchNorm2d(1536),
+                 nn.ReLU(inplace=True), ]
+        self.exit_conv2 = nn.Sequential(*conv2)
+
+        conv3 = [SeparableConv2d(1536, 2048, 3, padding=2, dilation=2, bias=False),
+                 nn.BatchNorm2d(2048),
+                 nn.ReLU(inplace=True), ]
+        self.exit_conv3 = nn.Sequential(*conv3)
+        self._init_param()
+        pass
+
+    def _init_param(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
         pass
 
     def forward(self, x):
-        identity = self.project(x)  # residual connection 准备
-        x = self.convs(x)  # 下采样2倍
+        # Entry Flow
+
+        x = self.entry_conv1(x)  # 2x
+        x = self.entry_conv2(x)  # 2x
+
+        x = self.entry_block1(x)  # 4x
+        x = self.entry_block2(x)  # 8x
+        x = self.entry_block3(x)  # 16x
+
+        # Middle Flow
+        for block in self.middle_flow:
+            x = block(x)  # 16x
+
+        # Exit Flow
+        x = self.exit_block(x)  # 16x
+        x = self.exit_conv1(x)  # 16x
+        x = self.exit_conv2(x)  # 16x
+        x = self.exit_conv3(x)  # 16x
+
+        return x
+
+    pass
+
+
+class _ConvBlock(nn.Module):
+    def __init__(self, inplanes, planes, stride=1, dilation=1):
+        super(_ConvBlock, self).__init__()
+        convs = [SeparableConv2d(inplanes, planes, 3, stride=1, padding=dilation,
+                                 dilation=dilation, bias=False),  # 第1个SeparableConv2d,stride=1不下采样
+                 nn.BatchNorm2d(planes),
+                 nn.ReLU(inplace=True),
+
+                 SeparableConv2d(planes, planes, 3, stride=1, padding=dilation,
+                                 dilation=dilation, bias=False),  # 第2个SeparableConv2d,stride=1不下采样
+                 nn.BatchNorm2d(planes),
+                 nn.ReLU(inplace=True),
+
+                 SeparableConv2d(planes, planes, 3, stride=stride,
+                                 padding=dilation, dilation=dilation,
+                                 bias=False),  # 第2个SeparableConv2d,可能stride=2下采样2倍
+                 nn.BatchNorm2d(planes), ]
+        self.convs = nn.Sequential(*convs)
+
+        self.project = None
+        if inplanes != planes or stride != 1:
+            self.project = ResidualConnection(inplanes, planes, stride)
+            pass
+        pass
+
+    def forward(self, x):
+        identity = x  # residual connection 准备
+        x = self.convs(x)
+        if self.project is not None:
+            identity = self.project(identity)
         x = x + identity  # residual connection 相加
         return F.relu(x, inplace=True)
 
     pass
 
 
-class _ConvMiddleBlock(nn.Module):
-    def __init__(self, inplanes=728):
-        """
-        Middle Flow中重复的block，channels和spatial都不发生变化
-        :param inplanes: 输入channels
-        """
-        super(_ConvMiddleBlock, self).__init__()
-        convs = [SeparableConv2d(inplanes, inplanes, 3, padding=1, bias=False),
-                 nn.BatchNorm2d(inplanes),
-                 nn.ReLU(inplace=True),
-                 SeparableConv2d(inplanes, inplanes, 3, padding=1, bias=False),
-                 nn.BatchNorm2d(inplanes),
-                 nn.ReLU(inplace=True),
-                 SeparableConv2d(inplanes, inplanes, 3, padding=1, bias=False),
-                 nn.BatchNorm2d(inplanes), ]
-        self.convs = nn.Sequential(*convs)
-        pass
-
-    def forward(self, x):
-        x = x + self.convs(x)  # channels和spatial都没有发生变化，Residual Connection直接相加
-        return F.relu(x, inplace=True)
-
-    pass
-
-
 class _ConvExitBlock(nn.Module):
-    def __init__(self, in_channels=728, out_channels=1024):
+    def __init__(self, in_channels=728, out_channels=1024, stride=1, dilation=1):
         """
         Exit Flow的第1个module
         前两个Separable Conv都不做下采样
@@ -364,219 +422,197 @@ class _ConvExitBlock(nn.Module):
         :param out_channels: 输出channels
         """
         super(_ConvExitBlock, self).__init__()
-        self.project = ResidualConnection(in_channels, out_channels, stride=2)
-        convs = [SeparableConv2d(in_channels, in_channels, 3, padding=1,
+        convs = [SeparableConv2d(in_channels, in_channels, 3, stride=1,
+                                 padding=dilation, dilation=dilation,
                                  bias=False),  # 728->728，不下采样
                  nn.BatchNorm2d(in_channels),
                  nn.ReLU(inplace=True),
-                 SeparableConv2d(in_channels, out_channels, 3, padding=1,
+                 SeparableConv2d(in_channels, out_channels, 3, stride=1,
+                                 padding=dilation, dilation=dilation,
                                  bias=False),  # 728->1024，不下采样
                  nn.BatchNorm2d(out_channels),
                  nn.ReLU(inplace=True),
-                 SeparableConv2d(out_channels, out_channels, 3, stride=2,
-                                 padding=1, bias=False),  # 1024->1024，下采样2倍
+                 SeparableConv2d(out_channels, out_channels, 3, stride=stride,
+                                 padding=dilation, dilation=dilation, bias=False),  # 1024->1024，下采样2倍
                  nn.BatchNorm2d(out_channels), ]
         self.convs = nn.Sequential(*convs)
+
+        self.project = None
+        if in_channels != out_channels or stride != 1:
+            self.project = ResidualConnection(in_channels, out_channels, stride)
+            pass
         pass
 
     def forward(self, x):
-        identity = self.project(x)  # residual connection 准备
+        identity = x  # residual connection 准备
         x = self.convs(x)  # 下采样2倍
+        if self.project is not None:
+            identity = self.project(identity)
         x = x + identity  # residual connection 相加
         return F.relu(x, inplace=True)
 
     pass
 
 
-class XceptionBackbone(nn.Module):
-    def __init__(self, in_channels=3, n_class=1000):
-        super(XceptionBackbone, self).__init__()
+class _XceptionBackBoneFactory(nn.Module):
+    def __init__(self, in_channels, entry_planes=(128, 256, 728),
+                 output_stride=16, n_middle=16):
+        """
+        实现一个工厂类，将DeepLabV+论文改进的XceptionBackbone统一到一起。
+        :param inplanes: 输入channels，图像channels
+        :param entry_planes: 每个entry block的输出channels，列表类型
+        :param n_middle: 改进实现用16
+        :param output_stride: 输入和主干输出的比值，默认16x
+        """
+        super(_XceptionBackBoneFactory, self).__init__()
+        assert len(entry_planes) == 3  # Entry Block共3个
+        """
+        DeepLabV3论文第3页原文:
+        If one would like to double the spatial density of computed feature
+        responses in the DCNNs (i.e., output stride = 16), the
+        stride of last pooling or convolutional layer that decreases
+        resolution is set to 1 to avoid signal decimation. Then, all
+        subsequent convolutional layers are replaced with atrous
+        convolutional layers having rate r = 2.
+        下采样采用stride=2，dilation=1的卷积。
+        下采样以后stride=1不再下采样，dilation根据output stride不同取相应的值
+        ------------------------------------------------------------------------
+        DeepLabV3+论文第5页原文:
+        Here, we denote output stride as the ratio of input image spatial resolution 
+        to the final output resolution (before global pooling or fully-connected layer). 
+
+        For the task of image classification, the spatial resolution of the
+        final feature maps is usually 32 times smaller than the input image resolution and
+        thus output stride = 32. 
+
+        For the task of semantic segmentation, one can adopt
+        output stride = 16 (or 8) for denser feature extraction by removing the striding
+        in the last one (or two) block(s) and applying the atrous convolution correspond-
+        ingly (e.g., we apply rate = 2 and rate = 4 to the last two blocks respectively
+        for output stride = 8).
+        ------------------------------------------------------------------------
+        如果output stride=8，那么在8x之后，所有卷积stride=1，dilation=4
+        如果output stride=16，那么在16x之后，所有卷积stride=1,dilation=2
+        如果output stride=32，那么在32x之后，所有卷积stride=1，dilation=1
+        
+        strides
+        对于8x，最后下采样是上一个block进行的，后面的dilation[0]=4,dilation[1]=4
+        对于16x，最后下采样是在stride[0]进行的，dilation[0]=1;后面dilation[1]=2
+        对于32x，最后下采样是在stride[1]进行的，dilation[0]和dilation[1]都是1
+        """
+        if output_stride == 8:
+            strides = (1, 1)
+            dilations = (4, 4)
+        elif output_stride == 16:
+            strides = (2, 1)
+            dilations = (1, 2)
+        elif output_stride == 32:
+            strides = (2, 2)
+            dilations = (1, 1)
+        else:
+            raise ValueError('output stride error!')
+
         # 以下Entry Flow
         conv1 = [nn.Conv2d(in_channels, 32, 3, stride=2, padding=1, bias=False),
                  nn.BatchNorm2d(32),
                  nn.ReLU(inplace=True), ]
-        self.entry_conv1 = nn.Sequential(*conv1)
+        self.entry_conv1 = nn.Sequential(*conv1)  # 第1个普通卷积，2x
 
         conv2 = [nn.Conv2d(32, 64, 3, padding=1, bias=False),
                  nn.BatchNorm2d(64),
                  nn.ReLU(inplace=True), ]
-        self.entry_conv2 = nn.Sequential(*conv2)
+        self.entry_conv2 = nn.Sequential(*conv2)  # 第2个普通卷积,2x
 
-        self.entry_block1 = _ConvEntryBlock(64, 128)
-        self.entry_block2 = _ConvEntryBlock(128, 256)
-        self.entry_block3 = _ConvEntryBlock(256, 728)
+        self.entry_block1 = _ConvBlock(64, entry_planes[0], stride=2)  # 4x
+        self.entry_block2 = _ConvBlock(entry_planes[0], entry_planes[1], stride=2)  # 8x
+        self.entry_block3 = _ConvBlock(entry_planes[1], entry_planes[2],
+                                       stride=strides[0], dilation=dilations[0])
+        # stride=1是8x,dilation应为4
+        # stride=2是16x，dilation应为1
 
         # 以下Middle Flow
-        self.middle_flow = nn.ModuleList([_ConvMiddleBlock(728)] * 16)  # 改进之一，middle block有16个
+        inplanes = entry_planes[2]
+        mid_block = _ConvBlock(inplanes, inplanes,
+                               stride=1, dilation=dilations[0])  # 不再下采样，根据output stride情况决定dilation
+        self.middle_blocks = nn.ModuleList([mid_block] * n_middle)  # 重复n_middle次
 
         # 以下Exit Flow
-        self.exit_block = _ConvExitBlock(728, 1024)
+        self.exit_block = _ConvExitBlock(inplanes, 1024, stride=strides[1],  # 和前面stride[0]结合使用，决定8x、16x、32x
+                                         dilation=dilations[1])
 
-        conv1 = [SeparableConv2d(1024, 1536, 3, padding=1, bias=False),
+        conv1 = [SeparableConv2d(1024, 1536, 3, padding=dilations[1],
+                                 dilation=dilations[1], bias=False),
                  nn.BatchNorm2d(1536),
                  nn.ReLU(inplace=True), ]
         self.exit_conv1 = nn.Sequential(*conv1)
 
-        conv2 = [SeparableConv2d(1536, 1536, 3, padding=1, bias=False),
+        conv2 = [SeparableConv2d(1536, 1536, 3, padding=dilations[1],
+                                 dilation=dilations[1], bias=False),
                  nn.BatchNorm2d(1536),
                  nn.ReLU(inplace=True), ]
         self.exit_conv2 = nn.Sequential(*conv2)
 
-        conv3 = [SeparableConv2d(1536, 2048, 3, padding=1, bias=False),
+        conv3 = [SeparableConv2d(1536, 2048, 3, padding=dilations[1],
+                                 dilation=dilations[1], bias=False),
                  nn.BatchNorm2d(2048),
                  nn.ReLU(inplace=True), ]
         self.exit_conv3 = nn.Sequential(*conv3)
 
-        self.avgpool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Sequential(nn.Linear(2048, n_class),
-                                nn.ReLU(inplace=True))
+        self._init_param()
+        pass
 
+    def _init_param(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
         pass
 
     def forward(self, x):
         # Entry Flow
-
-        x = self.entry_conv1(x)
-        x = self.entry_conv2(x)
-
-        x = self.entry_block1(x)
+        x = self.entry_conv1(x)  # 2x
+        print(x.shape)
+        x = self.entry_conv2(x)  # 2x
+        print(x.shape)
+        x = self.entry_block1(x)  # 4x
+        low_level_features = x
+        print(x.shape)
         x = self.entry_block2(x)
+        print(x.shape)
         x = self.entry_block3(x)
-
-        # Middle Flow
-        for block in self.middle_flow:
-            x = block(x)
-
-        # Exit Flow
-        x = self.exit_block(x)
-        x = self.exit_conv1(x)
-        x = self.exit_conv2(x)
-        x = self.exit_conv3(x)
-
-        # FC
-        x = self.avgpool(x)
-        x = x.view(x.shape[0], -1)
-        x = self.fc(x)
-
-        return x
-
-    pass
-
-
-################################################################################
-
-class _XceptionFactory(nn.Module):
-    def __init__(self, in_channels,
-                 entry_block=_PoolEntryBlock, entry_channels=(128, 256, 728),
-                 middle_block=_PoolMiddleBlock, n_middle=8,
-                 exit_block=_PoolExitBlock, exit_channels=1024,
-                 exit_conv_channels=(1536, 2048),
-                 n_class=1000):
-        """
-        闲的蛋疼，实现一个工厂类，将Xception论文实现和DeepLabV+论文改进的XceptionBackbone
-        统一到一起。增强了扩展性。
-        :param in_channels: 输入channels，图像channels
-        :param entry_block: 论文实现用_PoolEntryBlock，改进实现用_ConvEntryBlock
-        :param entry_channels: 每个entry block的输出channels，列表类型
-        :param middle_block: 论文实现用_PoolMiddleBlock，改进实现用_ConvMiddleBlock
-        :param n_middle: 论文实现用8，改进实现用16
-        :param exit_block: 论文实现用_PoolExitBlock，改进实现用_ConvExitBlock
-        :param exit_channels: 论文实现、改进实现都是1024
-        :param exit_conv_channels: 论文实现是2个Separable Conv的输出channels(1536,,2048)；
-                                    改进实现是3个Separable Conv的输出channels(1536,1536,2048)
-        :param n_class: n种分类
-        """
-        super(_XceptionFactory, self).__init__()
-        # 以下Entry Flow
-        conv1 = [nn.Conv2d(in_channels, 32, 3, stride=2, padding=1, bias=False),
-                 nn.BatchNorm2d(32),
-                 nn.ReLU(inplace=True), ]
-        self.entry_conv1 = nn.Sequential(*conv1)  # 第1个普通卷积，下采样2倍
-
-        conv2 = [nn.Conv2d(32, 64, 3, padding=1, bias=False),
-                 nn.BatchNorm2d(64),
-                 nn.ReLU(inplace=True), ]
-        self.entry_conv2 = nn.Sequential(*conv2)  # 第2个普通卷积
-
-        self.entry_blocks = nn.ModuleList()  # 连续3个residual block，都下采样2倍。
-        in_channels = 64
-        for i, out_channels in enumerate(entry_channels):
-            if i == 0 and isinstance(entry_block, _PoolEntryBlock):  # 注意第一个residual block的relu不一样
-                self.entry_blocks.append(entry_block(in_channels, out_channels, relu1=False))
-            elif i == 0 and isinstance(entry_block, _ConvEntryBlock):
-                self.entry_blocks.append(entry_block(in_channels, out_channels))
-            else:
-                self.entry_blocks.append(entry_block(in_channels, out_channels))
-            in_channels = out_channels
-            pass
-
-        # 以下Middle Flow
-        self.middle_blocks = nn.ModuleList([middle_block(in_channels)] * n_middle)
-
-        # 以下Exit Flow
-        self.exit_block = exit_block(in_channels, exit_channels)
-        in_channels = exit_channels
-
-        self.exit_convs = nn.ModuleList()
-        for out_channels in exit_conv_channels:
-            conv = [SeparableConv2d(in_channels, out_channels, 3, padding=1, bias=False),
-                    nn.BatchNorm2d(out_channels),
-                    nn.ReLU(inplace=True), ]
-            self.exit_convs.append(nn.Sequential(*conv))
-            in_channels = out_channels
-            pass
-
-        self.avgpool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Sequential(nn.Linear(in_channels, n_class),
-                                nn.ReLU(inplace=True))
-        pass
-
-    def forward(self, x):
-        # Entry Flow
-        x = self.entry_conv1(x)
-        x = self.entry_conv2(x)
-        for block in self.entry_blocks:
-            x = block(x)
-            pass
+        print(x.shape)
 
         # Middle Flow
         for block in self.middle_blocks:
             x = block(x)
+            print(x.shape)
             pass
 
         # Exit Flow
         x = self.exit_block(x)
-
-        for conv in self.exit_convs:
-            x = conv(x)
-            pass
-
-        x = self.avgpool(x)
-        x = x.view(x.shape[0], -1)
-        x = self.fc(x)
-
-        return x
+        print(x.shape)
+        x = self.exit_conv1(x)
+        print(x.shape)
+        x = self.exit_conv2(x)
+        print(x.shape)
+        x = self.exit_conv3(x)
+        print(x.shape)
+        return x, low_level_features
 
     pass
 
 
-def xception(xception_type='backbone', in_channels=3, n_class=1000):
-    if xception_type == 'paper':
-        return _XceptionFactory(in_channels=in_channels,
-                                entry_block=_PoolEntryBlock, entry_channels=[128, 256, 728],
-                                middle_block=_PoolMiddleBlock, n_middle=8,
-                                exit_block=_PoolExitBlock, exit_channels=1024,
-                                exit_conv_channels=[1536, 2048],
-                                n_class=n_class)
-    elif xception_type == 'backbone':
-        return _XceptionFactory(in_channels=in_channels,
-                                entry_block=_ConvEntryBlock, entry_channels=[128, 256, 728],
-                                middle_block=_ConvMiddleBlock, n_middle=16,
-                                exit_block=_ConvExitBlock, exit_channels=1024,
-                                exit_conv_channels=[1536, 1536, 2048],
-                                n_class=n_class)
+def xception_backbone(in_channels, output_stride=16):
+    if output_stride == 8:
+        return _XceptionBackBoneFactory(in_channels, output_stride=output_stride)
+    elif output_stride == 16:
+        return _XceptionBackBoneFactory(in_channels, output_stride=output_stride)
+    elif output_stride == 32:
+        return _XceptionBackBoneFactory(in_channels, output_stride=output_stride)
     else:
-        raise ValueError('xception type error!')
+        raise ValueError('output stride error!')
 
 
 ################################################################################
@@ -584,19 +620,16 @@ def xception(xception_type='backbone', in_channels=3, n_class=1000):
 if __name__ == '__main__':
     # device = torch.device('cuda:6')
     device = torch.device('cpu')
-
-    # net = Xception(3, 8).to(device)
-    # net = XceptionBackbone(3, 8).to(device)
-
-    key = 'paper'
-    net = xception(key, 3, 8).to(device)
-    print('in:', net, key)
+    # net = XceptionBackbone(3).to(device)
+    net = xception_backbone(3, output_stride=8).to(device)
+    print('in:', net)
 
     in_data = torch.randint(0, 256, (24, 3, 299, 299), dtype=torch.float)
     print(in_data.shape)
     in_data = in_data.to(device)
 
-    out_data = net(in_data)
-    out_data = out_data.cpu()
-    print('out:', out_data.shape)
+    high_level, low_level = net(in_data)
+    high_level = high_level.cpu()
+    low_level = low_level.cpu()
+    print('out:', high_level.shape, low_level.shape)
     pass
