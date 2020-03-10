@@ -6,7 +6,7 @@ import torchvision.transforms as tsfs
 from datetime import datetime
 from torch.utils.data import DataLoader
 from torchvision.datasets import FashionMNIST
-from xception import Xception, XceptionBackbone, xception
+from xception import Xception, XceptionBackbone, xception_backbone
 
 
 class ClassificationTrainer(object):
@@ -97,9 +97,8 @@ if __name__ == '__main__':
     dev = torch.device('cuda:4')
 
     # model = Xception(1, 10)
-    # model = XceptionBackbone(1, 10)
-    model = xception('paper', 1, 10)
-    # model = xception('backbone', 1, 10)
+    # model = XceptionBackbone(1)
+    model = xception_backbone(1, output_stride=16)
     model.to(dev)
 
     optim = torch.optim.Adam(model.parameters())
