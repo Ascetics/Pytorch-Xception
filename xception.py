@@ -3,6 +3,21 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def _print_shape(func):
+    """
+    单元测试时使用
+    :param func:
+    :return:
+    """
+
+    def print_shape(*args, **kwargs):
+        res = func(*args, **kwargs)
+        print(func, res.shape)
+        return res
+
+    return print_shape
+
+
 class SeparableConv2d(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1,
                  padding=1, dilation=1, bias=True):
@@ -401,6 +416,7 @@ class _ConvBlock(nn.Module):
             pass
         pass
 
+    # @_print_shape
     def forward(self, x):
         identity = x  # residual connection 准备
         x = self.convs(x)
@@ -443,6 +459,7 @@ class _ConvExitBlock(nn.Module):
             pass
         pass
 
+    # @_print_shape
     def forward(self, x):
         identity = x  # residual connection 准备
         x = self.convs(x)  # 下采样2倍
@@ -608,18 +625,25 @@ def xception_backbone(in_channels, output_stride=16):
 ################################################################################
 
 if __name__ == '__main__':
-    # device = torch.device('cuda:6')
-    device = torch.device('cpu')
-    # net = XceptionBackbone(3).to(device)
-    net = xception_backbone(3, output_stride=8).to(device)
-    print('in:', net)
+    batch_size = 1
+    in_dims = 3
+    num_class = 8
+    im = torch.randint(0, 256, size=(batch_size, in_dims, 299, 299),
+                       dtype=torch.float, requires_grad=True)
 
-    in_data = torch.randint(0, 256, (24, 3, 299, 299), dtype=torch.float)
-    print(in_data.shape)
-    in_data = in_data.to(device)
+    print(im.shape)
 
-    high_level, low_level = net(in_data)
-    high_level = high_level.cpu()
-    low_level = low_level.cpu()
-    print('out:', high_level.shape, low_level.shape)
+    net = xception_backbone(in_dims, 16)
+    output, low_level = net(im)
+    print(output.shape, low_level.shape)
+
+    lb = torch.randint(0, num_class,
+                       size=(output.shape[0], output.shape[2], output.shape[3]),
+                       dtype=torch.long)
+
+    optimizer = torch.optim.Adam(net.parameters())
+    loss = F.cross_entropy(output, lb)
+    loss.backward()
+    optimizer.step()
+    print(loss.detach().item())
     pass
