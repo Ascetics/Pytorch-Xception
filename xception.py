@@ -533,7 +533,7 @@ class _XceptionBackBoneFactory(nn.Module):
         # 以下Middle Flow
         inplanes = entry_planes[2]
         mid_block = _ConvBlock(inplanes, inplanes,
-                               stride=1, dilation=dilations[0])  # 不再下采样，根据output stride情况决定dilation
+                               stride=1, dilation=dilations[1])  # 不再下采样，根据output stride情况决定dilation
         self.middle_blocks = nn.ModuleList([mid_block] * n_middle)  # 重复n_middle次
 
         # 以下Exit Flow
